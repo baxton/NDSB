@@ -104,17 +104,27 @@ int main() {
         // prepare mini-batch
         fill_in_mini_batch(mini_batch_ids, mini_batch_size, train_files_num, buffer.get(), file_id_map, path_train);
 
+
+        float cost = 999999.;
+        float prev_cost = cost;
+
+        float alpha = 5.;
+
         for (int v = 0; v < mini_batch_size; ++v) {
             int idx = v * vector_len;
 
             memset(y, 0, 121 * sizeof(float));
             y[ int(buffer[idx + 0]) ] = 1.;
 
-            float cost = nn.fit_minibatch(&buffer[idx + 1], y, 1, (float)5.);
-            cout << "# cost: " << cost << endl;
+            cost = nn.fit_minibatch(&buffer[idx + 1], y, 1, alpha);
+            if (prev_cost < cost) {
+                alpha /= 2.;
+            }
+            prev_cost = cost;
         }
+        cout << "# last cost: " << cost << endl;
 
-
+        nn.print(cout);
     }
 
 
