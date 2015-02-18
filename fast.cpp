@@ -16,6 +16,8 @@
 using namespace std;
 
 
+typedef double DATATYPE;
+
 
 void get_file_id_map(map<int, pair<string, string> >& file_id_map) {
     int id;
@@ -64,6 +66,8 @@ void fill_in_mini_batch(int* mini_batch_ids, int mini_batch_size, int train_file
         idx += file_size;
 
         //cout << "# loaded [" << mini_batch_ids[i] << "]: " << fname << " (" << file_size << ")" << endl;
+
+        fclose(fin);
     }
 }
 
@@ -79,7 +83,7 @@ int main() {
 
     const int train_files_num = 30336;
 
-    const int mini_batch_size = 10000;
+    const int mini_batch_size = 2500;
     int mini_batch_ids[mini_batch_size];
 
     // allocate mini-batch buffer
@@ -96,27 +100,36 @@ int main() {
     sizes.push_back(15);
     sizes.push_back(121);
 
-    ma::ann_leaner<float> nn(sizes);
+    ma::ann_leaner<DATATYPE> nn(sizes);
 
-    float y[121];
+    DATATYPE y[121];
 
-    for (int mb = 0; mb < 10; ++mb) {
+    DATATYPE new_x[10000];
+
+    for (int mb = 0; mb < 10000; ++mb) {
         // prepare mini-batch
         fill_in_mini_batch(mini_batch_ids, mini_batch_size, train_files_num, buffer.get(), file_id_map, path_train);
 
 
-        float cost = 999999.;
-        float prev_cost = cost;
+        DATATYPE cost = 999999.;
+        DATATYPE prev_cost = cost;
 
-        float alpha = 5.;
+        DATATYPE alpha = 10.; //5.;
+
 
         for (int v = 0; v < mini_batch_size; ++v) {
             int idx = v * vector_len;
 
-            memset(y, 0, 121 * sizeof(float));
+            for (int i = 0; i < 121; ++i)
+                y[i] = 0;
             y[ int(buffer[idx + 0]) ] = 1.;
 
-            cost = nn.fit_minibatch(&buffer[idx + 1], y, 1, alpha);
+            for (int i = 0; i < 10000; ++i)
+                new_x[i] = buffer[idx + 1 + i];
+
+            //cost = nn.fit_minibatch(&buffer[idx + 1], y, 1, alpha);
+            cost = nn.fit_minibatch(&new_x[0], y, 1, alpha);
+
             if (prev_cost < cost) {
                 alpha /= 2.;
             }
@@ -126,7 +139,29 @@ int main() {
 
         nn.print(cout);
     }
+/*
+    {
+        int total_bd_size = 136;
+        int total_wd_size = 151815;
 
+        ma::memory::ptr_vec<DATATYPE> bd, wd;
+
+        for (int i = 0; i < 121; ++i)
+            y[i] = 0;
+        y[ int(buffer[0]) ] = 1.;
+
+        nn.calc_deriv(&new_x[0], y, bd, wd);
+
+        cout << "BD vs BB_DERIV" << endl;
+        for (int b = 0; b < total_bd_size; ++b)
+            cout << bd[b] << "\t" << nn.get_bb_deriv()[b] << endl;
+
+        cout << "WD vs WW_DERIV" << endl;
+        for (int w = 0; w < total_wd_size; ++w)
+            cout << wd[w] << "\t" << nn.get_ww_deriv()[w] << endl;
+
+    }
+*/
 
     return 0;
 }
