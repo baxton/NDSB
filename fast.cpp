@@ -2,10 +2,13 @@
 
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <sstream>
 #include <map>
+#include <iomanip>
 
 #include <random.hpp>
 #include <ann.hpp>
@@ -17,6 +20,9 @@ using namespace std;
 
 
 typedef double DATATYPE;
+
+
+const int ALIGN = 512;
 
 
 void get_file_id_map(map<int, pair<string, string> >& file_id_map) {
@@ -44,26 +50,44 @@ void get_file_id_map(map<int, pair<string, string> >& file_id_map) {
 }
 
 
-void fill_in_mini_batch(int* mini_batch_ids, int mini_batch_size, int train_files_num, float* buffer, map<int, pair<string, string> >& file_id_map, const string& path_train) {
+void fill_in_mini_batch(int* mini_batch_ids, int mini_batch_size, int train_files_num, DATATYPE* buffer, DATATYPE* y, map<int, pair<string, string> >& file_id_map, const string& path_train) {
 
     ma::random::get_k_of_n(mini_batch_size, train_files_num, mini_batch_ids);
 
-    int idx = 0;
+    int row = 0;
+
+    ma::memory::ptr_vec<float> local_buf(new float[80008]);
 
     for (int i = 0; i < mini_batch_size; ++i) {
         pair<string, string>& p = file_id_map[ mini_batch_ids[i] ];
+#if defined FOR_LINUX
+        string fname = path_train + p.first + "/" + p.second + ".b";
+#else
         string fname = path_train + p.first + "\\" + p.second + ".b";
+#endif
 
         FILE* fin = fopen(fname.c_str(), "rb");
 
         // get file size
         fseek(fin, 0, SEEK_END);
-        size_t file_size = ftell(fin) / sizeof(float);  // in floats
+        size_t file_size = ftell(fin) / sizeof(DATATYPE);  // in floats
         fseek(fin, 0, SEEK_SET);
 
         // read
-        size_t read = fread(&buffer[idx], file_size * sizeof(float), 1, fin);
-        idx += file_size;
+        size_t read = fread(local_buf.get(), file_size * sizeof(float), 1, fin);
+
+        for (int cls_idx = 0; cls_idx < 121; ++cls_idx)
+            y[row * 121 + cls_idx] = 0.;
+        y[row * 121 + int(local_buf[0])] = 1.;
+
+        //cout << "# ID " << mini_batch_ids[i] << " cls " << int(local_buf[0]) << " (" << fname << ") " << read << endl;
+
+        //ma::linalg::copy(&buffer[row * 10000], &local_buf[1], 10000);
+        for (int val_idx = 0; val_idx < 10000; ++val_idx)
+            buffer[row * 10000 + val_idx] = local_buf[1 + val_idx] / 5000.;
+
+        row += 1;
+
 
         //cout << "# loaded [" << mini_batch_ids[i] << "]: " << fname << " (" << file_size << ")" << endl;
 
@@ -79,16 +103,28 @@ int main() {
     map<int, pair<string, string> > file_id_map;
     get_file_id_map(file_id_map);
 
+#if defined FOR_LINUX
+    const string path_train = "/home/maxim/kaggle/NDSB/data/train_ann1/";
+    const char* path_tmp = "/home/maxim/kaggle/NDSB/tmp/";
+#else
+    cout << "# built for Windows" << endl;
     const string path_train = "C:\\Temp\\kaggle\\NDSB\\data\\train_ann1\\";
+    const char* path_tmp = "C:\\Temp\\kaggle\\NDSB\\tmp\\";
+#endif
+
 
     const int train_files_num = 30336;
 
-    const int mini_batch_size = 2500;
+    const int mini_batch_size = 5000;
     int mini_batch_ids[mini_batch_size];
 
     // allocate mini-batch buffer
     const int vector_len = 1 + 100 * 100;
-    ma::memory::ptr_vec<float> buffer(new float[ mini_batch_size * vector_len ]);
+    ma::memory::ptr_vec<DATATYPE> buffer_non_aligned(new DATATYPE[ ALIGN + mini_batch_size * vector_len ]);
+    size_t p = (size_t)buffer_non_aligned.get();
+    DATATYPE* buffer =  (DATATYPE*)((p + ALIGN) - (p % ALIGN));
+
+    ma::memory::ptr_vec<DATATYPE> Y (new DATATYPE[mini_batch_size * 121]);
 
 
     // learn
@@ -97,74 +133,145 @@ int main() {
 
     vector<int> sizes;
     sizes.push_back(10000);
-    sizes.push_back(15);
+    sizes.push_back(40);
+    //sizes.push_back(20);
+    sizes.push_back(10);
     sizes.push_back(121);
 
     ma::ann_leaner<DATATYPE> nn(sizes);
 
-    DATATYPE y[121];
 
-    DATATYPE new_x[10000];
 
-    for (int mb = 0; mb < 10000; ++mb) {
+
+    DATATYPE prev_cost = 999.;
+    int prev_cost_grow = 0;
+    DATATYPE cost_on_save = 999;
+
+    int shift_cnt = 0;
+
+    DATATYPE alpha = 8.;
+
+    for (int mb = 0; mb < 1000; ++mb) {
         // prepare mini-batch
-        fill_in_mini_batch(mini_batch_ids, mini_batch_size, train_files_num, buffer.get(), file_id_map, path_train);
+        fill_in_mini_batch(mini_batch_ids, mini_batch_size, train_files_num, buffer, Y.get(), file_id_map, path_train);
+
+        cout << "# minibatch" << endl;
+        for (int i = 1; i < 20; ++i)
+            cout << mini_batch_ids[mini_batch_size - i] << ", ";
+        cout << endl;
 
 
-        DATATYPE cost = 999999.;
-        DATATYPE prev_cost = cost;
 
-        DATATYPE alpha = 10.; //5.;
+        alpha *= 2.;
+        DATATYPE cost;
 
-
-        for (int v = 0; v < mini_batch_size; ++v) {
-            int idx = v * vector_len;
-
-            for (int i = 0; i < 121; ++i)
-                y[i] = 0;
-            y[ int(buffer[idx + 0]) ] = 1.;
-
-            for (int i = 0; i < 10000; ++i)
-                new_x[i] = buffer[idx + 1 + i];
-
-            //cost = nn.fit_minibatch(&buffer[idx + 1], y, 1, alpha);
-            cost = nn.fit_minibatch(&new_x[0], y, 1, alpha);
-
-            if (prev_cost < cost) {
+        for (int i = 0; i < 20; ++i) {
+            cost = nn.fit_minibatch(buffer, Y.get(), mini_batch_size, alpha);
+//            if (cost < .50 && alpha > .015)
+//                alpha = .015;
+            if (prev_cost < cost)
                 alpha /= 2.;
-            }
             prev_cost = cost;
         }
-        cout << "# last cost: " << cost << endl;
 
-        nn.print(cout);
+
+        cout << setprecision(16) << "# last cost: " << cost << " alpha " << alpha << " iter " << mb << endl;
+
+//        if (cost > prev_cost) {
+//            cout << "Please adjust alpha: " << endl;
+//            cin >> alpha;
+//        }
+
+
+
+//        nn.print(cout);
+//        DATATYPE output[121];
+//        nn.get_output(output);
+//        cout << "# output vs real " << endl;
+//        for (int i = 0; i < 121; ++i)
+//            cout << output[i] << "\t" << Y[(mini_batch_size-1)*121 + i] << endl;
+//        cout << endl;
+
+//        double v;
+//        ma::random::rand(&v, 1);
+//        if (.4 <= v) {
+//            alpha /= 2.;
+//        }
+//        else {
+//            alpha *= 2.;
+//        }
+
+        if (cost <= .49 && cost_on_save > cost) {
+            stringstream path;
+            path << path_tmp << "ann_" << mb << "_" << cost << ".b";
+            fstream fout(path.str().c_str(), fstream::out);
+            nn.print(fout);
+            fout.close();
+            cost_on_save = cost;
+            cout << "# saved: " << path.str() << endl;
+        }
+/*
+        shift_cnt += 1;
+        ma::random::rand(&v, 1);
+        if (5 < prev_cost_grow || (40 < shift_cnt && .7 < v)) {
+            prev_cost_grow = 0;
+            nn.random_shift();
+            shift_cnt = 0;
+
+            ma::random::rand(&v, 1);
+            if (.4 <= v) {
+                alpha /= 2.;
+            }
+            else {
+                alpha *= 2.;
+            }
+
+        }
+*/
     }
 /*
     {
-        int total_bd_size = 136;
-        int total_wd_size = 151815;
+        int total_bd_size = 0;
+        int total_wd_size = 0;
+
+        int layers_num = sizes.size();
+        for (int l = 1; l < layers_num; ++l) {
+            int l_layer_size = sizes[layers_num - l];
+
+            total_bd_size += l_layer_size;
+            total_wd_size += (l_layer_size * sizes[layers_num - l - 1]);
+        }
+
 
         ma::memory::ptr_vec<DATATYPE> bd, wd;
 
-        for (int i = 0; i < 121; ++i)
-            y[i] = 0;
-        y[ int(buffer[0]) ] = 1.;
+        nn.calc_deriv(buffer, Y.get(), bd, wd);
 
-        nn.calc_deriv(&new_x[0], y, bd, wd);
+
+        double b_error = 0.;
+        double w_error = 0.;
 
         cout << "BD vs BB_DERIV" << endl;
-        for (int b = 0; b < total_bd_size; ++b)
+        for (int b = 0; b < total_bd_size; ++b) {
             cout << bd[b] << "\t" << nn.get_bb_deriv()[b] << endl;
+            b_error += ::sqrt((bd[b] - nn.get_bb_deriv()[b]) * (bd[b] - nn.get_bb_deriv()[b]));
+        }
 
         cout << "WD vs WW_DERIV" << endl;
-        for (int w = 0; w < total_wd_size; ++w)
+        for (int w = 0; w < total_wd_size; ++w) {
             cout << wd[w] << "\t" << nn.get_ww_deriv()[w] << endl;
+            w_error += ::sqrt((wd[w] - nn.get_ww_deriv()[w]) * (wd[w] - nn.get_ww_deriv()[w]));
+        }
+
+        cout << "BD avr error: " << (b_error / total_bd_size) << endl;
+        cout << "WD avr error: " << (w_error / total_wd_size) << endl;
 
     }
 */
 
     return 0;
 }
+
 
 
 
