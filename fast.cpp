@@ -13,16 +13,25 @@
 #include <random.hpp>
 #include <ann.hpp>
 #include <id_file_map.h>
+#include <train_indices.h>
 
 
 
 using namespace std;
 
 
-typedef double DATATYPE;
+//#define SHORT_SET
+
+typedef float DATATYPE;
 
 
 const int ALIGN = 512;
+
+const int VEC_LEN = 1 + 2 + 48 * 48;
+const int FILE_SIZE_BYTES = 9228;
+const int FILE_SIZE = FILE_SIZE_BYTES / sizeof(DATATYPE);
+const int CLS_NUM = 121;
+
 
 
 void get_file_id_map(map<int, pair<string, string> >& file_id_map) {
@@ -52,14 +61,25 @@ void get_file_id_map(map<int, pair<string, string> >& file_id_map) {
 
 void fill_in_mini_batch(int* mini_batch_ids, int mini_batch_size, int train_files_num, DATATYPE* buffer, DATATYPE* y, map<int, pair<string, string> >& file_id_map, const string& path_train) {
 
+#if !defined SHORT_SET
     ma::random::get_k_of_n(mini_batch_size, train_files_num, mini_batch_ids);
+#else
+    ma::random::get_k_of_n(mini_batch_size, train_indices_size, mini_batch_ids);
+#endif
 
     int row = 0;
 
-    ma::memory::ptr_vec<float> local_buf(new float[80008]);
+    ma::memory::ptr_vec<DATATYPE> local_buf(new DATATYPE[FILE_SIZE]);
 
     for (int i = 0; i < mini_batch_size; ++i) {
-        pair<string, string>& p = file_id_map[ mini_batch_ids[i] ];
+#if defined SHORT_SET
+        int idx_idx = mini_batch_ids[i];
+        int idx = train_indices[idx_idx];
+#else
+        int idx = mini_batch_ids[i];
+#endif
+
+        pair<string, string>& p = file_id_map[ idx ];
 #if defined FOR_LINUX
         string fname = path_train + p.first + "/" + p.second + ".b";
 #else
@@ -70,21 +90,27 @@ void fill_in_mini_batch(int* mini_batch_ids, int mini_batch_size, int train_file
 
         // get file size
         fseek(fin, 0, SEEK_END);
-        size_t file_size = ftell(fin) / sizeof(DATATYPE);  // in floats
+        size_t file_size = ftell(fin);
         fseek(fin, 0, SEEK_SET);
 
-        // read
-        size_t read = fread(local_buf.get(), file_size * sizeof(float), 1, fin);
+        // sanity check
+        if (file_size != FILE_SIZE_BYTES)
+            cout << "# ERROR file size is different " << file_size << " vs " << FILE_SIZE_BYTES << endl;
 
-        for (int cls_idx = 0; cls_idx < 121; ++cls_idx)
-            y[row * 121 + cls_idx] = 0.;
-        y[row * 121 + int(local_buf[0])] = 1.;
+        // read
+        size_t read = fread(local_buf.get(), file_size, 1, fin);
+
+        for (int cls_idx = 0; cls_idx < CLS_NUM; ++cls_idx)
+            y[row * CLS_NUM + cls_idx] = 0.;
+        y[row * CLS_NUM + int(local_buf[0])] = 1.;
+
 
         //cout << "# ID " << mini_batch_ids[i] << " cls " << int(local_buf[0]) << " (" << fname << ") " << read << endl;
 
-        //ma::linalg::copy(&buffer[row * 10000], &local_buf[1], 10000);
-        for (int val_idx = 0; val_idx < 10000; ++val_idx)
-            buffer[row * 10000 + val_idx] = local_buf[1 + val_idx] / 5000.;
+        // this does not include the 1st item which is a class
+        int data_vec_len = VEC_LEN - 1;
+        for (int val_idx = 0; val_idx < data_vec_len; ++val_idx)
+            buffer[row * data_vec_len + val_idx] = local_buf[1 + val_idx];
 
         row += 1;
 
@@ -115,16 +141,21 @@ int main() {
 
     const int train_files_num = 30336;
 
-    const int mini_batch_size = 5000;
+#if defined SHORT_SET
+    const int mini_batch_size = 1585;
+#else
+    const int mini_batch_size = 30336;
+#endif
+
     int mini_batch_ids[mini_batch_size];
 
     // allocate mini-batch buffer
-    const int vector_len = 1 + 100 * 100;
+    const int vector_len = VEC_LEN - 1; // remove class
     ma::memory::ptr_vec<DATATYPE> buffer_non_aligned(new DATATYPE[ ALIGN + mini_batch_size * vector_len ]);
     size_t p = (size_t)buffer_non_aligned.get();
     DATATYPE* buffer =  (DATATYPE*)((p + ALIGN) - (p % ALIGN));
 
-    ma::memory::ptr_vec<DATATYPE> Y (new DATATYPE[mini_batch_size * 121]);
+    ma::memory::ptr_vec<DATATYPE> Y (new DATATYPE[mini_batch_size * CLS_NUM]);
 
 
     // learn
@@ -132,11 +163,14 @@ int main() {
 
 
     vector<int> sizes;
-    sizes.push_back(10000);
-    sizes.push_back(40);
-    //sizes.push_back(20);
-    sizes.push_back(10);
-    sizes.push_back(121);
+    sizes.push_back(VEC_LEN - 1);
+    sizes.push_back(100);
+    //sizes.push_back(50);
+    //sizes.push_back(4);
+    //sizes.push_back(2);
+    //sizes.push_back(4);
+    //sizes.push_back(2);
+    sizes.push_back(CLS_NUM);
 
     ma::ann_leaner<DATATYPE> nn(sizes);
 
@@ -149,33 +183,36 @@ int main() {
 
     int shift_cnt = 0;
 
-    DATATYPE alpha = 8.;
+    DATATYPE alpha = .8;
 
-    for (int mb = 0; mb < 1000; ++mb) {
-        // prepare mini-batch
-        fill_in_mini_batch(mini_batch_ids, mini_batch_size, train_files_num, buffer, Y.get(), file_id_map, path_train);
+    // for full set
+    fill_in_mini_batch(mini_batch_ids, mini_batch_size, train_files_num, buffer, Y.get(), file_id_map, path_train);
+
+    for (int mb = 0; mb < 500000; ++mb) {
+        // prepare mini-batch - for not full set
+        //fill_in_mini_batch(mini_batch_ids, mini_batch_size, train_files_num, buffer, Y.get(), file_id_map, path_train);
 
         cout << "# minibatch" << endl;
-        for (int i = 1; i < 20; ++i)
+        for (int i = 1; i < 10; ++i)
             cout << mini_batch_ids[mini_batch_size - i] << ", ";
         cout << endl;
 
 
 
-        alpha *= 2.;
         DATATYPE cost;
 
-        for (int i = 0; i < 20; ++i) {
+        for (int i = 0; i < 2; ++i) {
             cost = nn.fit_minibatch(buffer, Y.get(), mini_batch_size, alpha);
-//            if (cost < .50 && alpha > .015)
-//                alpha = .015;
             if (prev_cost < cost)
                 alpha /= 2.;
-            prev_cost = cost;
+            else if (0.000001 >= ::abs(prev_cost - cost) and alpha < 2.)
+                alpha *= 2.;
+            else
+                prev_cost = cost;
         }
 
 
-        cout << setprecision(16) << "# last cost: " << cost << " alpha " << alpha << " iter " << mb << endl;
+        cout << setprecision(21) << "# last cost: " << cost << " alpha " << alpha << " iter " << mb << endl;
 
 //        if (cost > prev_cost) {
 //            cout << "Please adjust alpha: " << endl;
@@ -201,15 +238,20 @@ int main() {
 //            alpha *= 2.;
 //        }
 
-        if (cost <= .49 && cost_on_save > cost) {
+
+
+        if (cost <= .30 && cost_on_save > cost) {
             stringstream path;
-            path << path_tmp << "ann_" << mb << "_" << cost << ".b";
+            path << path_tmp << "ann_100x1_full_" << mb << "_" << cost << ".b";
             fstream fout(path.str().c_str(), fstream::out);
             nn.print(fout);
             fout.close();
             cost_on_save = cost;
             cout << "# saved: " << path.str() << endl;
         }
+
+
+
 /*
         shift_cnt += 1;
         ma::random::rand(&v, 1);
