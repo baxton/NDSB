@@ -80,8 +80,36 @@ public:
         random::rand<T>(bb_.get(), total_bb_size_);
         random::rand<T>(ww_.get(), total_ww_size_);
 
-    }
+        for (int i = 0; i < total_bb_size_; ++i)
+            bb_[i] -= .5;
 
+//        for (int i = 0; i < total_ww_size_; ++i)
+        int ww_idx = 0;
+        for (int l = 1; l < layers_num; ++l) {
+            int size = sizes_[l] * sizes_[l-1];
+            for (int i = 0; i < size; ++i) {
+                ww_[ww_idx + i] = (ww_[ww_idx + i] - .5); // / ::sqrt(sizes_[l-1]);
+            }
+            ww_idx += size;
+        }
+
+    }
+/*
+    ann_leaner(const T* buffer) :
+        sizes_(sizes),
+        aa_(),
+        ww_(),
+        bb_(),
+        deltas_(),
+        bb_deriv_(),
+        ww_deriv_(),
+        total_bb_size_(0),
+        total_ww_size_(0),
+        total_aa_size_(0),
+        verbose_(false)
+    {
+    }
+*/
 
     template <class I>
     void print_vector(ostream& os, const I* vec, int size, const char* comment, const char* name) {
@@ -108,7 +136,8 @@ public:
     // calculates sigmoid in place
     void sigmoid(T* v, int size) {
         for (int i = 0; i < size; ++i) {
-            v[i] = 1. / (1. + ::exp(-v[i]));
+            double val = v[i];
+            v[i] = 1. / (1. + ::exp(-val));
         }
     }
 
@@ -117,6 +146,25 @@ public:
     void reset_deriv_for_next_minibatch() {
         linalg::fill(bb_deriv_.get(), total_bb_size_, (T)0);
         linalg::fill(ww_deriv_.get(), total_ww_size_, (T)0);
+    }
+
+    void random_shift() {
+        double v;
+        for (int b = 0; b < total_bb_size_; ++b) {
+            random::rand(&v, 1);
+            if (.7 < v) {
+                random::rand(&v, 1);
+                bb_[b] = (v - .5) ;
+            }
+        }
+
+        for (int w = 0; w < total_ww_size_; ++w) {
+            random::rand(&v, 1);
+            if (.7 < v) {
+                random::rand(&v, 1);
+                ww_[w] = (v - .5) ;
+            }
+        }
     }
 
 
@@ -175,9 +223,14 @@ public:
 
                 // calculate derivatives
                 for (int a = 0; a < sizes_[l_idx]; ++a) { // rows
-                    cost += (aa_[aa_idx + a] - y[a]) * (aa_[aa_idx + a] - y[a]);
+                    //cost += (aa_[aa_idx + a] - y[a]) * (aa_[aa_idx + a] - y[a]);
 
-                    T delta = (aa_[aa_idx + a] - y[a]) * aa_[aa_idx + a] * (1. - aa_[aa_idx + a]);
+                    cost +=  -1. * (y[a] * ::log(aa_[aa_idx + a]) + (1. - y[a]) * ::log(1. - aa_[aa_idx + a])) ;
+
+
+                    //T sig_deriv = aa_[aa_idx + a] - aa_[aa_idx + a] * aa_[aa_idx + a];
+
+                    T delta = (aa_[aa_idx + a] - y[a]); // * sig_deriv;
 
                     deltas_[aa_idx + a] = delta;
                     bb_deriv_[aa_idx + a] += delta;
@@ -198,7 +251,7 @@ public:
 
                 // calculate derivatives
                 for (int a = 0; a < sizes_[l_idx]; ++a) {
-                    T sig_deriv = aa_[aa_idx + a] * (1. - aa_[aa_idx + a]);
+                    T sig_deriv = aa_[aa_idx + a] - aa_[aa_idx + a] * aa_[aa_idx + a];
                     T delta = 0;
                     for (int a_next = 0; a_next < sizes_[l_idx + 1]; ++a_next) {
                         delta += ww_[ww_idx_next + a_next * sizes_[l_idx] + a] * deltas_[aa_idx_next + a_next];
@@ -216,7 +269,7 @@ public:
             }
         }
 
-        return cost / 2.;
+        return cost; // / 2.;
     }
 
     void average_deriv(T sample_size) {
@@ -244,17 +297,31 @@ public:
 
         // update biases and weights
 
+        T v;
+
         for (int b = 0; b < total_bb_size_; ++b) {
-            bb_[b] -= alpha * bb_deriv_[b];
+            //random::rand(&v, 1);
+            //if (.3 < v)
+                bb_[b] -= alpha * bb_deriv_[b];
         }
 
         for (int w = 0; w < total_ww_size_; ++w) {
-            ww_[w] -= alpha * ww_deriv_[w];
+            //random::rand(&v, 1);
+            //if (.3 < v)
+                ww_[w] -= alpha * ww_deriv_[w];
         }
 
         return cost / rows;
     }
 
+
+    void get_output(T* y) {
+        int layers_num = sizes_.size();
+        int aa_idx = total_aa_size_ - sizes_[layers_num - 1];
+        for (int a = 0; a < sizes_[layers_num - 1]; ++a) {
+            y[a] = aa_[aa_idx + a];
+        }
+    }
 
 
     // Helper method to calculate cost of current sample
@@ -270,7 +337,7 @@ public:
 
     // Helper method to debug backward propagation logic
     void calc_deriv(const T* x, const T* y, memory::ptr_vec<T>& bd, memory::ptr_vec<T>& wd) {
-        T epsilon = 0.00001;
+        T epsilon = 0.0000001;
 
         // prepare vectors
         bd.reset(new T[total_bb_size_]);
@@ -282,8 +349,10 @@ public:
             T tmp_b = bb_[b];
 
             // 1st pass
+            bb_[b] -= epsilon;
             forward(x);
             T cost_before = cost(y);
+            bb_[b] = tmp_b;
 
             // 2nd pass
             bb_[b] += epsilon;
@@ -291,7 +360,7 @@ public:
             T cost_after = cost(y);
 
             // calc derivative
-            T deriv = (cost_after - cost_before) / epsilon;
+            T deriv = (cost_after - cost_before) / (2. * epsilon);
             bd[b] = deriv;
 
             // restore bb val
@@ -304,8 +373,10 @@ public:
             T tmp_w = ww_[w];
 
             // 1st pass
+            ww_[w] -= epsilon;
             forward(x);
             T cost_before = cost(y);
+            ww_[w] = tmp_w;
 
             // 2nd pass
             ww_[w] += epsilon;
@@ -313,7 +384,7 @@ public:
             T cost_after = cost(y);
 
             // calc derivative
-            T deriv = (cost_after - cost_before) / epsilon;
+            T deriv = (cost_after - cost_before) / (2. * epsilon);
             wd[w] = deriv;
 
             // restore ww val
@@ -348,3 +419,4 @@ public:
 
 
 #endif
+
