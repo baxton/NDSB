@@ -88,7 +88,7 @@ public:
         for (int l = 1; l < layers_num; ++l) {
             int size = sizes_[l] * sizes_[l-1];
             for (int i = 0; i < size; ++i) {
-                ww_[ww_idx + i] = (ww_[ww_idx + i] - .5); // / ::sqrt(sizes_[l-1]);
+                ww_[ww_idx + i] = (ww_[ww_idx + i] - .5); // ::sqrt(sizes_[l-1]);
             }
             ww_idx += size;
         }
@@ -152,7 +152,7 @@ public:
         double v;
         for (int b = 0; b < total_bb_size_; ++b) {
             random::rand(&v, 1);
-            if (.7 < v) {
+            if (.4 < v) {
                 random::rand(&v, 1);
                 bb_[b] = (v - .5) ;
             }
@@ -160,7 +160,7 @@ public:
 
         for (int w = 0; w < total_ww_size_; ++w) {
             random::rand(&v, 1);
-            if (.7 < v) {
+            if (.4 < v) {
                 random::rand(&v, 1);
                 ww_[w] = (v - .5) ;
             }
@@ -236,9 +236,10 @@ public:
                     bb_deriv_[aa_idx + a] += delta;
 
                     int aa_idx_prev = aa_idx - sizes_[l_idx - 1];
-                    for (int a_prev = 0; a_prev < sizes_[l_idx - 1]; ++a_prev) { // columns
-                        ww_deriv_[ww_idx + a * sizes_[l_idx - 1] + a_prev] += aa_[aa_idx_prev + a_prev] * delta;
-                    }
+//                    for (int a_prev = 0; a_prev < sizes_[l_idx - 1]; ++a_prev) { // columns
+//                        ww_deriv_[ww_idx + a * sizes_[l_idx - 1] + a_prev] += aa_[aa_idx_prev + a_prev] * delta;
+//                    }
+                    linalg::mul_add_v2s(&aa_[aa_idx_prev], delta, &ww_deriv_[ww_idx + a * sizes_[l_idx - 1]], sizes_[l_idx - 1]);
                 }
 
             }
@@ -262,9 +263,10 @@ public:
 
                     const T* activation = aa_idx_prev >= 0 ? &aa_[aa_idx_prev] : x;
 
-                    for (int a_prev = 0; a_prev < sizes_[l_idx - 1]; ++a_prev) {
-                        ww_deriv_[ww_idx + a * sizes_[l_idx - 1] + a_prev] += activation[a_prev] * delta;
-                    }
+//                    for (int a_prev = 0; a_prev < sizes_[l_idx - 1]; ++a_prev) {
+//                        ww_deriv_[ww_idx + a * sizes_[l_idx - 1] + a_prev] += activation[a_prev] * delta;
+//                    }
+                    linalg::mul_add_v2s(activation, delta, &ww_deriv_[ww_idx + a * sizes_[l_idx - 1]], sizes_[l_idx - 1]);
                 }
             }
         }
@@ -299,17 +301,15 @@ public:
 
         T v;
 
-        for (int b = 0; b < total_bb_size_; ++b) {
-            //random::rand(&v, 1);
-            //if (.3 < v)
-                bb_[b] -= alpha * bb_deriv_[b];
-        }
+//        for (int b = 0; b < total_bb_size_; ++b) {
+//            bb_[b] -= alpha * bb_deriv_[b];
+//        }
+        linalg::mul_sub_v2s(bb_deriv_.get(), alpha, bb_.get(), total_bb_size_);
 
-        for (int w = 0; w < total_ww_size_; ++w) {
-            //random::rand(&v, 1);
-            //if (.3 < v)
-                ww_[w] -= alpha * ww_deriv_[w];
-        }
+//        for (int w = 0; w < total_ww_size_; ++w) {
+//            ww_[w] -= alpha * ww_deriv_[w];
+//        }
+        linalg::mul_sub_v2s(ww_deriv_.get(), alpha, ww_.get(), total_ww_size_);
 
         return cost / rows;
     }
@@ -329,10 +329,14 @@ public:
         int layers_num = sizes_.size();
         int aa_idx = total_aa_size_ - sizes_[layers_num - 1];
         T cost = 0;
+
         for (int a = 0; a < sizes_[layers_num - 1]; ++a) {
-            cost += (aa_[aa_idx + a] - y[a]) * (aa_[aa_idx + a] - y[a]);
+            //cost += (aa_[aa_idx + a] - y[a]) * (aa_[aa_idx + a] - y[a]);
+
+            cost += -1. * (y[a] * ::log(aa_[aa_idx + a]) + (1. - y[a]) * ::log(1. - aa_[aa_idx + a]));
         }
-        return cost / 2.;
+
+        return cost;  // / 2.;
     }
 
     // Helper method to debug backward propagation logic
