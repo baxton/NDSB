@@ -66,23 +66,24 @@ def get_classes():
 def vectorize_test(fname):
 
     fname_in = pathes.path_test + fname
-    fname_out = path_out_test + fname + ".b2"
+    fname_out = path_out_test + fname + ".b"
 
     img = Image.open(fname_in)
 
-    rows = int(img.size[1] * SCALE)
-    cols = int(img.size[0] * SCALE)
+    rows = MAX_ROWS
+    cols = MAX_COLS
 
     rimg = img.resize((cols, rows))     # reversed order of dimentions
-    a = np.asarray(rimg)
+    a = np.asarray(rimg).reshape((rows * cols,))
 
-    vec = array('f', [1.] * VEC_LEN)    # float
+    vec = array('f', [0.] * VEC_LEN)    # float
 
-    idx = 1
-    for r in range(rows):
-        for c in range(cols):
-            vec[idx] = float(a[r,c]) / 255.
-            idx += 1
+    vec[0] = 0
+    vec[1] = rows - means[1]
+    vec[2] = rows - means[2]
+
+    for i in range(rows * cols):
+        vec[3 + i] = (a[i] - means[3 + i]) / 255.
 
     fout = open(fname_out, "wb+")
     vec.tofile(fout)
@@ -183,20 +184,9 @@ def get_means():
 
 def process_test():
     files = [f for f in os.listdir(pathes.path_test)]
-
-##    import matplotlib.image as Image
-##    max_rows = 0
-##    max_cols = 0
-
     for f in files:
         vectorize_test(f)
-##        img = Image.imread(pathes.path_test + f)
-##        if max_rows < img.shape[0]:
-##            max_rows = img.shape[0]
-##        if max_cols < img.shape[1]:
-##            max_cols = img.shape[1]
 
-    ##print "# Max rows", max_rows, "Max cols", max_cols
 
 
 
@@ -208,8 +198,8 @@ def main():
 ##    print "]"
 
 
-    process_train ()
-    #process_test()
+    #process_train ()
+    process_test()
 
 
 
