@@ -20,8 +20,6 @@
 using namespace std;
 
 
-//#define SHORT_SET
-
 typedef float DATATYPE;
 
 
@@ -31,6 +29,9 @@ const int VEC_LEN = 1 + 2 + 48 * 48;
 const int FILE_SIZE_BYTES = 9228;
 const int FILE_SIZE = FILE_SIZE_BYTES / sizeof(DATATYPE);
 const int CLS_NUM = 121;
+
+
+
 
 
 
@@ -59,27 +60,34 @@ void get_file_id_map(map<int, pair<string, string> >& file_id_map) {
 }
 
 
-void fill_in_mini_batch(int* mini_batch_ids, int mini_batch_size, int train_files_num, DATATYPE* buffer, DATATYPE* y, map<int, pair<string, string> >& file_id_map, const string& path_train) {
+void load_ids(const char* fname, vector<int>& ids) {
+    ids.clear();
 
-#if !defined SHORT_SET
-    ma::random::get_k_of_n(mini_batch_size, train_files_num, mini_batch_ids);
-#else
-    ma::random::get_k_of_n(mini_batch_size, train_indices_size, mini_batch_ids);
-#endif
+    fstream fin(fname, fstream::in);
+    string line;
+    while (std::getline(fin, line)) {
+        int id;
+        sscanf(line.c_str(), "%d", &id);
+        ids.push_back(id);
+    }
+
+    cout << "# ids are initialized " << ids.size() << endl;
+}
+
+
+void load_data(const vector<int>& file_ids, DATATYPE* X, DATATYPE* Y, map<int, pair<string, string> >& file_id_map, const string& path_train) {
 
     int row = 0;
 
-    ma::memory::ptr_vec<DATATYPE> local_buf(new DATATYPE[FILE_SIZE]);
+    // align memory buffer for faster reading
+    ma::memory::ptr_vec<DATATYPE> local_buf_non_aligned(new DATATYPE[ ALIGN + FILE_SIZE ]);
+    size_t p = (size_t)local_buf_non_aligned.get();
+    DATATYPE* local_buf =  (DATATYPE*)((p + ALIGN) - (p % ALIGN));
 
-    for (int i = 0; i < mini_batch_size; ++i) {
-#if defined SHORT_SET
-        int idx_idx = mini_batch_ids[i];
-        int idx = train_indices[idx_idx];
-#else
-        int idx = mini_batch_ids[i];
-#endif
-
+    for (int i = 0; i < file_ids.size(); ++i) {
+        int idx = file_ids[i];
         pair<string, string>& p = file_id_map[ idx ];
+
 #if defined FOR_LINUX
         string fname = path_train + p.first + "/" + p.second + ".b";
 #else
@@ -98,79 +106,107 @@ void fill_in_mini_batch(int* mini_batch_ids, int mini_batch_size, int train_file
             cout << "# ERROR file size is different " << file_size << " vs " << FILE_SIZE_BYTES << endl;
 
         // read
-        size_t read = fread(local_buf.get(), file_size, 1, fin);
+        size_t read = fread(local_buf, file_size, 1, fin);
 
         for (int cls_idx = 0; cls_idx < CLS_NUM; ++cls_idx)
-            y[row * CLS_NUM + cls_idx] = 0.;
-        y[row * CLS_NUM + int(local_buf[0])] = 1.;
+            Y[row * CLS_NUM + cls_idx] = 0.;
+        Y[row * CLS_NUM + int(local_buf[0])] = 1.;
 
-
-        //cout << "# ID " << mini_batch_ids[i] << " cls " << int(local_buf[0]) << " (" << fname << ") " << read << endl;
 
         // this does not include the 1st item which is a class
         int data_vec_len = VEC_LEN - 1;
         for (int val_idx = 0; val_idx < data_vec_len; ++val_idx)
-            buffer[row * data_vec_len + val_idx] = local_buf[1 + val_idx];
+            X[row * data_vec_len + val_idx] = local_buf[1 + val_idx];
 
         row += 1;
 
-
-        //cout << "# loaded [" << mini_batch_ids[i] << "]: " << fname << " (" << file_size << ")" << endl;
-
         fclose(fin);
     }
+
+    cout << "# data was loaded" << endl;
 }
 
 
 
 
+void save_ann(ma::ann_leaner<DATATYPE>& nn, DATATYPE cost, const char* path_tmp, const char* pref, int iter_num) {
+    stringstream path;
+    path << path_tmp << pref << "_" << cost << "_" << iter_num << ".b";
+    fstream fout(path.str().c_str(), fstream::out);
+    nn.print(fout);
+    fout.close();
+    cout << "# saved: " << path.str() << endl;
+}
+
+
+
 int main() {
 
+    //
+    // Maps ID on file name
+    //
     map<int, pair<string, string> > file_id_map;
     get_file_id_map(file_id_map);
+
+    //
+    // Some platform specific initialization
+    //
+
+    vector<int> train_ids;
+    vector<int> valid_ids;
 
 #if defined FOR_LINUX
     const string path_train = "/home/maxim/kaggle/NDSB/data/train_ann1/";
     const char* path_tmp = "/home/maxim/kaggle/NDSB/tmp/";
+
+    load_ids("/home/maxim/kaggle/NDSB/data/train_ids.txt", train_ids);
+    load_ids("/home/maxim/kaggle/NDSB/data/valid_ids.txt", valid_ids);
 #else
     cout << "# built for Windows" << endl;
     const string path_train = "C:\\Temp\\kaggle\\NDSB\\data\\train_ann1\\";
     const char* path_tmp = "C:\\Temp\\kaggle\\NDSB\\tmp\\";
+
+    load_ids("C:\\Temp\\kaggle\\NDSB\\data\\train_ids.txt", train_ids);
+    load_ids("C:\\Temp\\kaggle\\NDSB\\data\\valid_ids.txt", valid_ids);
 #endif
 
 
-    const int train_files_num = 30336;
+    //const int train_files_num = 30336;
 
-#if defined SHORT_SET
-    const int mini_batch_size = 1585;
-#else
-    const int mini_batch_size = 30336;
-#endif
 
-    int mini_batch_ids[mini_batch_size];
+    //
+    // allocate buffers
+    //
 
-    // allocate mini-batch buffer
     const int vector_len = VEC_LEN - 1; // remove class
-    ma::memory::ptr_vec<DATATYPE> buffer_non_aligned(new DATATYPE[ ALIGN + mini_batch_size * vector_len ]);
-    size_t p = (size_t)buffer_non_aligned.get();
-    DATATYPE* buffer =  (DATATYPE*)((p + ALIGN) - (p % ALIGN));
+    int train_buffer_size = train_ids.size() * vector_len;
+    int valid_buffer_size = valid_ids.size() * vector_len;
 
-    ma::memory::ptr_vec<DATATYPE> Y (new DATATYPE[mini_batch_size * CLS_NUM]);
+    ma::memory::ptr_vec<DATATYPE> train_buffer(new DATATYPE[ train_buffer_size ]);
+    ma::memory::ptr_vec<DATATYPE> valid_buffer(new DATATYPE[ valid_buffer_size ]);
+
+    ma::memory::ptr_vec<DATATYPE> train_Y (new DATATYPE[train_ids.size() * CLS_NUM]);
+    ma::memory::ptr_vec<DATATYPE> valid_Y (new DATATYPE[valid_ids.size() * CLS_NUM]);
 
 
+    //
     // learn
+    //
+
     ma::random::seed();
 
 
+    //
+    // Prepare ANN
+    //
+
+    const char* pref = "ann_60";
+
     vector<int> sizes;
-    sizes.push_back(VEC_LEN - 1);
-    sizes.push_back(100);
+    sizes.push_back(VEC_LEN - 1);   // input
+    sizes.push_back(60);
     //sizes.push_back(50);
-    //sizes.push_back(4);
-    //sizes.push_back(2);
-    //sizes.push_back(4);
-    //sizes.push_back(2);
-    sizes.push_back(CLS_NUM);
+    sizes.push_back(CLS_NUM);       // output
 
     ma::ann_leaner<DATATYPE> nn(sizes);
 
@@ -178,99 +214,72 @@ int main() {
 
 
     DATATYPE prev_cost = 999.;
-    int prev_cost_grow = 0;
     DATATYPE cost_on_save = 999;
+    int small_delta_counter = 0;
 
-    int shift_cnt = 0;
+    DATATYPE alpha = 1.6;            // learning rate
 
-    DATATYPE alpha = .8;
+    //
+    // Load data sets
+    //
+    load_data(train_ids, train_buffer.get(), train_Y.get(), file_id_map, path_train);
+    load_data(valid_ids, valid_buffer.get(), valid_Y.get(), file_id_map, path_train);
 
-    // for full set
-    fill_in_mini_batch(mini_batch_ids, mini_batch_size, train_files_num, buffer, Y.get(), file_id_map, path_train);
 
+    //
+    // Learning iterations
+    //
     for (int mb = 0; mb < 500000; ++mb) {
-        // prepare mini-batch - for not full set
-        //fill_in_mini_batch(mini_batch_ids, mini_batch_size, train_files_num, buffer, Y.get(), file_id_map, path_train);
-
-        cout << "# minibatch" << endl;
-        for (int i = 1; i < 10; ++i)
-            cout << mini_batch_ids[mini_batch_size - i] << ", ";
-        cout << endl;
-
-
 
         DATATYPE cost;
 
-        for (int i = 0; i < 2; ++i) {
-            cost = nn.fit_minibatch(buffer, Y.get(), mini_batch_size, alpha);
-            if (prev_cost < cost)
-                alpha /= 2.;
-            else if (0.000001 >= ::abs(prev_cost - cost) and alpha < 2.)
-                alpha *= 2.;
-            else
-                prev_cost = cost;
-        }
+        cost = nn.fit_minibatch(train_buffer.get(), train_Y.get(), train_ids.size(), alpha);
+        DATATYPE cost_delta = ::fabs(prev_cost - cost);
+        if (prev_cost < cost && .01 <= cost_delta && alpha > .000001)
+            alpha /= 2.;
+        else
+            prev_cost = cost;
 
+        if (alpha < 0.000001) {
+            cout << "# local min found, lets try something else, resetting..." << endl;
+            save_ann(nn, cost, path_tmp, pref, mb);
 
-        cout << setprecision(21) << "# last cost: " << cost << " alpha " << alpha << " iter " << mb << endl;
-
-//        if (cost > prev_cost) {
-//            cout << "Please adjust alpha: " << endl;
-//            cin >> alpha;
-//        }
-
-
-
-//        nn.print(cout);
-//        DATATYPE output[121];
-//        nn.get_output(output);
-//        cout << "# output vs real " << endl;
-//        for (int i = 0; i < 121; ++i)
-//            cout << output[i] << "\t" << Y[(mini_batch_size-1)*121 + i] << endl;
-//        cout << endl;
-
-//        double v;
-//        ma::random::rand(&v, 1);
-//        if (.4 <= v) {
-//            alpha /= 2.;
-//        }
-//        else {
-//            alpha *= 2.;
-//        }
-
-
-
-        if (cost <= .30 && cost_on_save > cost) {
-            stringstream path;
-            path << path_tmp << "ann_100x1_full_" << mb << "_" << cost << ".b";
-            fstream fout(path.str().c_str(), fstream::out);
-            nn.print(fout);
-            fout.close();
-            cost_on_save = cost;
-            cout << "# saved: " << path.str() << endl;
-        }
-
-
-
-/*
-        shift_cnt += 1;
-        ma::random::rand(&v, 1);
-        if (5 < prev_cost_grow || (40 < shift_cnt && .7 < v)) {
-            prev_cost_grow = 0;
             nn.random_shift();
-            shift_cnt = 0;
+            alpha = 1.6;
+            prev_cost = 999.;
+            cost_on_save = 999.;
+            mb = 0;
+        }
 
-            ma::random::rand(&v, 1);
-            if (.4 <= v) {
-                alpha /= 2.;
+
+        if (0 == (mb % 5)) {
+            DATATYPE valid_cost = 0.;
+            for (int vr = 0; vr < valid_ids.size(); ++vr) {
+                nn.forward(&valid_buffer[vr * vector_len]);
+                valid_cost += nn.cost(&valid_Y[vr * CLS_NUM]);
             }
-            else {
+            valid_cost /= valid_ids.size();
+            cout << setprecision(21) << "# cost: " << cost << " (" << cost_delta << ") alpha " << alpha << " iter " << mb << " validation " << valid_cost << endl;
+        }
+        else {
+            cout << setprecision(21) << "# cost: " << cost << " (" << cost_delta << ") alpha " << alpha << " iter " << mb << endl;
+        }
+
+        if (cost_delta < 0.00019) {
+            ++small_delta_counter;
+            if (small_delta_counter > 10) {
+                small_delta_counter = 0;
                 alpha *= 2.;
             }
-
         }
-*/
+
+
+        if (0 == ((mb+1) % 100) || cost <= .30 && cost_on_save > cost) {
+            save_ann(nn, cost, path_tmp, pref, mb);
+            cost_on_save = cost;
+        }
     }
+
 /*
     {
         int total_bd_size = 0;
