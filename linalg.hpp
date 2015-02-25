@@ -50,7 +50,14 @@ namespace linalg {
     // Semantic: v1 += v2
     template<class T>
     void sum_v2v(T* v1, const T* v2, int size) {
-        for (int i = 0; i < size; ++i) {
+        int size_4 = size / 4;
+        for (int i = 0; i < size_4; ++i) {
+            v1[i*4 + 0] += v2[i*4 + 0];
+            v1[i*4 + 1] += v2[i*4 + 1];
+            v1[i*4 + 2] += v2[i*4 + 2];
+            v1[i*4 + 3] += v2[i*4 + 3];
+        }
+        for (int i = size_4 * 4; i < size; ++i) {
             v1[i] += v2[i];
         }
     }
@@ -69,9 +76,61 @@ namespace linalg {
         }
     }
 
+
+    template<class T>
+    void mul_add_v2v(const T* v1, const T* v2, T* result, int size) {
+        int size_4 = size / 4;
+        for (int i = 0; i < size_4; ++i) {
+            result[i*4 + 0] += v1[i*4 + 0] * v2[i*4 + 1];
+            result[i*4 + 1] += v1[i*4 + 1] * v2[i*4 + 1];
+            result[i*4 + 2] += v1[i*4 + 2] * v2[i*4 + 2];
+            result[i*4 + 3] += v1[i*4 + 3] * v2[i*4 + 3];
+        }
+        for (int i = size_4 * 4; i < size; ++i) {
+            result[i] += v1[i] * v2[i];
+        }
+    }
+
+    template<class T>
+    void mul_add_v2s(const T* v1, T s, T* result, int size) {
+        int size_4 = size / 4;
+        for (int i = 0; i < size_4; ++i) {
+            result[i*4 + 0] += v1[i*4 + 0] * s;
+            result[i*4 + 1] += v1[i*4 + 1] * s;
+            result[i*4 + 2] += v1[i*4 + 2] * s;
+            result[i*4 + 3] += v1[i*4 + 3] * s;
+        }
+        for (int i = size_4 * 4; i < size; ++i) {
+            result[i] += v1[i] * s;
+        }
+    }
+
+
+    template<class T>
+    void mul_sub_v2s(const T* v1, T s, T* result, int size) {
+        int size_4 = size / 4;
+        for (int i = 0; i < size_4; ++i) {
+            result[i*4 + 0] -= v1[i*4 + 0] * s;
+            result[i*4 + 1] -= v1[i*4 + 1] * s;
+            result[i*4 + 2] -= v1[i*4 + 2] * s;
+            result[i*4 + 3] -= v1[i*4 + 3] * s;
+        }
+        for (int i = size_4 * 4; i < size; ++i) {
+            result[i] -= v1[i] * s;
+        }
+    }
+
+
     template<class T>
     void div_v2s(T* v, int size, T val) {
-        for (int i = 0; i < size; ++i) {
+        int size_4 = size / 4;
+        for (int i = 0; i < size_4; ++i) {
+            v[i*4 + 0] /= val;
+            v[i*4 + 1] /= val;
+            v[i*4 + 2] /= val;
+            v[i*4 + 3] /= val;
+        }
+        for (int i = size_4 * 4; i < size; ++i) {
             v[i] /= val;
         }
     }
@@ -81,8 +140,18 @@ namespace linalg {
     template<class T>
     T dot_v2v(const T* v1, const T* v2, int size) {
         T result = (T)0;
-        for (int i = 0; i < size; ++i)
+
+        int size_4 = size / 4;
+        for (int i = 0; i < size_4; ++i) {
+            result += v1[i*4 + 0] * v2[i*4 + 0];
+            result += v1[i*4 + 1] * v2[i*4 + 1];
+            result += v1[i*4 + 2] * v2[i*4 + 2];
+            result += v1[i*4 + 3] * v2[i*4 + 3];
+        }
+        for (int i = size_4 * 4; i < size; ++i) {
             result += v1[i] * v2[i];
+        }
+
         return result;
     }
 
