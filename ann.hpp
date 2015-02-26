@@ -32,6 +32,10 @@ class ann_leaner {
     memory::ptr_vec<T> bb_deriv_;
     memory::ptr_vec<T> ww_deriv_;
 
+    memory::ptr_vec<T> bb_deriv_old_;
+    memory::ptr_vec<T> ww_deriv_old_;
+
+
     int total_bb_size_;
     int total_ww_size_;
     int total_aa_size_;
@@ -48,6 +52,8 @@ public:
         deltas_(),
         bb_deriv_(),
         ww_deriv_(),
+        bb_deriv_old_(),
+        ww_deriv_old_(),
         total_bb_size_(0),
         total_ww_size_(0),
         total_aa_size_(0),
@@ -75,6 +81,13 @@ public:
         // partial derivatives
         bb_deriv_.reset(new T[total_bb_size_]);
         ww_deriv_.reset(new T[total_ww_size_]);
+
+        // deltas old
+        bb_deriv_old_.reset(new T[total_bb_size_]);
+        ww_deriv_old_.reset(new T[total_ww_size_]);
+        linalg::fill(bb_deriv_old_.get(), total_bb_size_, (T)0);
+        linalg::fill(ww_deriv_old_.get(), total_ww_size_, (T)0);
+
 
         // initialise biases and weights with random values
         random::rand<T>(bb_.get(), total_bb_size_);
@@ -135,9 +148,17 @@ public:
 
     // calculates sigmoid in place
     void sigmoid(T* v, int size) {
-        for (int i = 0; i < size; ++i) {
-            double val = v[i];
-            v[i] = 1. / (1. + ::exp(-val));
+        int size_4 = size / 4;
+        for (int i = 0; i < size_4; ++i) {
+            //v[i] = 1. / (1. + ::exp(-v[i]));
+
+            v[i*4+0] = linalg::quick_sigmoid(v[i*4+0]);
+            v[i*4+1] = linalg::quick_sigmoid(v[i*4+1]);
+            v[i*4+2] = linalg::quick_sigmoid(v[i*4+2]);
+            v[i*4+3] = linalg::quick_sigmoid(v[i*4+3]);
+        }
+        for (int i = size_4 * 4; i < size; ++i) {
+            v[i] = linalg::quick_sigmoid(v[i]);
         }
     }
 
@@ -281,7 +302,7 @@ public:
 
 
 
-    T fit_minibatch(const T* X, const T* Y, int rows, T alpha) {
+    T fit_minibatch(const T* X, const T* Y, int rows, T alpha, T lambda) {
 
         reset_deriv_for_next_minibatch();
 
@@ -297,6 +318,13 @@ public:
 
         average_deriv((T)rows);
 
+        T reg = 0.;
+        for (int w = 0; w < total_ww_size_; ++w) {
+            reg += ww_[w] * ww_[w];
+            ww_deriv_[w] += lambda * ww_[w] / rows;
+        }
+        reg = reg * lambda / (2. * rows);
+
         // update biases and weights
 
         T v;
@@ -304,14 +332,14 @@ public:
 //        for (int b = 0; b < total_bb_size_; ++b) {
 //            bb_[b] -= alpha * bb_deriv_[b];
 //        }
-        linalg::mul_sub_v2s(bb_deriv_.get(), alpha, bb_.get(), total_bb_size_);
+        linalg::mul_sub_v2s_use_deltas(bb_deriv_.get(), alpha, bb_.get(), bb_deriv_old_.get(), total_bb_size_);
 
 //        for (int w = 0; w < total_ww_size_; ++w) {
 //            ww_[w] -= alpha * ww_deriv_[w];
 //        }
-        linalg::mul_sub_v2s(ww_deriv_.get(), alpha, ww_.get(), total_ww_size_);
+        linalg::mul_sub_v2s_use_deltas(ww_deriv_.get(), alpha, ww_.get(), ww_deriv_old_.get(), total_ww_size_);
 
-        return cost / rows;
+        return cost / rows + reg;
     }
 
 
