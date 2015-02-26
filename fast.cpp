@@ -29,6 +29,7 @@ const int VEC_LEN = 1 + 2 + 48 * 48;
 const int FILE_SIZE_BYTES = 9228;
 const int FILE_SIZE = FILE_SIZE_BYTES / sizeof(DATATYPE);
 const int CLS_NUM = 121;
+//const int CLS_NUM = 2;
 
 
 
@@ -111,7 +112,14 @@ void load_data(const vector<int>& file_ids, DATATYPE* X, DATATYPE* Y, map<int, p
         for (int cls_idx = 0; cls_idx < CLS_NUM; ++cls_idx)
             Y[row * CLS_NUM + cls_idx] = 0.;
         Y[row * CLS_NUM + int(local_buf[0])] = 1.;
-
+        /*
+        if (local_buf[0] < 60) {
+            Y[row * CLS_NUM + 0] = 1.;
+        }
+        else {
+            Y[row * CLS_NUM + 1] = 1.;
+        }
+        */
 
         // this does not include the 1st item which is a class
         int data_vec_len = VEC_LEN - 1;
@@ -200,11 +208,11 @@ int main() {
     // Prepare ANN
     //
 
-    const char* pref = "ann_60";
+    const char* pref = "ann_10_15";
 
     vector<int> sizes;
     sizes.push_back(VEC_LEN - 1);   // input
-    sizes.push_back(60);
+    sizes.push_back(70);
     //sizes.push_back(50);
     sizes.push_back(CLS_NUM);       // output
 
@@ -214,10 +222,12 @@ int main() {
 
 
     DATATYPE prev_cost = 999.;
+    DATATYPE valid_cost = 0.;
     DATATYPE cost_on_save = 999;
     int small_delta_counter = 0;
 
     DATATYPE alpha = 1.6;            // learning rate
+    DATATYPE lambda = 15;
 
     //
     // Load data sets
@@ -231,18 +241,38 @@ int main() {
     //
     for (int mb = 0; mb < 500000; ++mb) {
 
+        {
+            fstream fin("./CMD.txt", fstream::in);
+            if (fin) {
+                string cmd;
+                std::getline(fin, cmd);
+
+                if ("ALPHA" == cmd.substr(0, 5)) {
+                    DATATYPE a = atof(cmd.substr(6).c_str());
+                    alpha = a;
+                }
+                else if ("SAVE" == cmd) {
+                    save_ann(nn, valid_cost, path_tmp, pref, mb);
+                }
+
+                //
+                fin.close();
+                remove("./CMD.txt");
+            }
+        }
+
         DATATYPE cost;
 
-        cost = nn.fit_minibatch(train_buffer.get(), train_Y.get(), train_ids.size(), alpha);
+        cost = nn.fit_minibatch(train_buffer.get(), train_Y.get(), train_ids.size(), alpha, lambda);
         DATATYPE cost_delta = ::fabs(prev_cost - cost);
         if (prev_cost < cost && .01 <= cost_delta && alpha > .000001)
             alpha /= 2.;
-        else
-            prev_cost = cost;
+
+        prev_cost = cost;
 
         if (alpha < 0.000001) {
             cout << "# local min found, lets try something else, resetting..." << endl;
-            save_ann(nn, cost, path_tmp, pref, mb);
+            save_ann(nn, valid_cost, path_tmp, pref, mb);
 
             nn.random_shift();
             alpha = 1.6;
@@ -253,7 +283,7 @@ int main() {
 
 
         if (0 == (mb % 5)) {
-            DATATYPE valid_cost = 0.;
+            valid_cost = 0.;
             for (int vr = 0; vr < valid_ids.size(); ++vr) {
                 nn.forward(&valid_buffer[vr * vector_len]);
                 valid_cost += nn.cost(&valid_Y[vr * CLS_NUM]);
@@ -274,9 +304,9 @@ int main() {
         }
 
 
-        if (0 == ((mb+1) % 100) || cost <= .30 && cost_on_save > cost) {
-            save_ann(nn, cost, path_tmp, pref, mb);
-            cost_on_save = cost;
+        if (0 == ((mb+1) % 100) || cost <= .30 && cost_on_save > valid_cost) {
+            save_ann(nn, valid_cost, path_tmp, pref, mb);
+            cost_on_save = valid_cost;
         }
     }
 
