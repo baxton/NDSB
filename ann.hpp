@@ -32,15 +32,9 @@ class ann_leaner {
     memory::ptr_vec<T> bb_deriv_;
     memory::ptr_vec<T> ww_deriv_;
 
-    memory::ptr_vec<T> bb_deriv_old_;
-    memory::ptr_vec<T> ww_deriv_old_;
-
-
     int total_bb_size_;
     int total_ww_size_;
     int total_aa_size_;
-
-    bool verbose_;
 
 
 public:
@@ -52,12 +46,9 @@ public:
         deltas_(),
         bb_deriv_(),
         ww_deriv_(),
-        bb_deriv_old_(),
-        ww_deriv_old_(),
         total_bb_size_(0),
         total_ww_size_(0),
-        total_aa_size_(0),
-        verbose_(false)
+        total_aa_size_(0)
     {
         int layers_num = sizes_.size();
 
@@ -82,26 +73,19 @@ public:
         bb_deriv_.reset(new T[total_bb_size_]);
         ww_deriv_.reset(new T[total_ww_size_]);
 
-        // deltas old
-        bb_deriv_old_.reset(new T[total_bb_size_]);
-        ww_deriv_old_.reset(new T[total_ww_size_]);
-        linalg::fill(bb_deriv_old_.get(), total_bb_size_, (T)0);
-        linalg::fill(ww_deriv_old_.get(), total_ww_size_, (T)0);
-
 
         // initialise biases and weights with random values
         random::rand<T>(bb_.get(), total_bb_size_);
         random::rand<T>(ww_.get(), total_ww_size_);
 
         for (int i = 0; i < total_bb_size_; ++i)
-            bb_[i] -= .5;
+            bb_[i] = (bb_[i] - .5);
 
-//        for (int i = 0; i < total_ww_size_; ++i)
         int ww_idx = 0;
         for (int l = 1; l < layers_num; ++l) {
             int size = sizes_[l] * sizes_[l-1];
             for (int i = 0; i < size; ++i) {
-                ww_[ww_idx + i] = (ww_[ww_idx + i] - .5); // ::sqrt(sizes_[l-1]);
+                ww_[ww_idx + i] = (ww_[ww_idx + i] - .5);
             }
             ww_idx += size;
         }
@@ -148,20 +132,47 @@ public:
 
     // calculates sigmoid in place
     void sigmoid(T* v, int size) {
-        int size_4 = size / 4;
-        for (int i = 0; i < size_4; ++i) {
-            //v[i] = 1. / (1. + ::exp(-v[i]));
+        for (int i = 0; i < size; ++i) {
+            v[i] = 1. / (1. + ::exp(-v[i]));
+/*
+            if (isnan(v[i]))
+                v[i] = 0.00000000000001;
 
-            v[i*4+0] = linalg::quick_sigmoid(v[i*4+0]);
-            v[i*4+1] = linalg::quick_sigmoid(v[i*4+1]);
-            v[i*4+2] = linalg::quick_sigmoid(v[i*4+2]);
-            v[i*4+3] = linalg::quick_sigmoid(v[i*4+3]);
-        }
-        for (int i = size_4 * 4; i < size; ++i) {
-            v[i] = linalg::quick_sigmoid(v[i]);
+            if (isinf(v[i]))
+                v[i] = .999999999999;
+*/
         }
     }
 
+
+    void softmax(T* v, int size) {
+        T sum_exp = 0;
+        for (int i = 0; i < size; ++i) {
+            T tmp = ::exp(v[i]);
+/*
+            if (isnan(tmp))
+                tmp = 0.00000000000001;
+            if (isinf(v[i]))
+                tmp = .999999999999;
+*/
+            sum_exp += tmp;
+        }
+
+        for (int i = 0; i < size; ++i) {
+            v[i] = ::exp(v[i]) / sum_exp;
+/*
+            if (isnan(v[i]))
+                v[i] = 0.00000000000001;
+            if (isinf(v[i]))
+                v[i] = .999999999999;
+*/
+        }
+    }
+
+
+    double logloss(double yhat, double y) {
+        return -1. * (y * ::log( yhat > 0. ? yhat : 0.00000000000001 ) + (1. - y) * ::log((1. - yhat) > 0. ? (1. - yhat) : 0.00000000000001 ));
+    }
 
 
     void reset_deriv_for_next_minibatch() {
@@ -169,55 +180,35 @@ public:
         linalg::fill(ww_deriv_.get(), total_ww_size_, (T)0);
     }
 
-    void random_shift() {
-        double v;
-        for (int b = 0; b < total_bb_size_; ++b) {
-            random::rand(&v, 1);
-            if (.4 < v) {
-                random::rand(&v, 1);
-                bb_[b] = (v - .5) ;
-            }
-        }
 
-        for (int w = 0; w < total_ww_size_; ++w) {
-            random::rand(&v, 1);
-            if (.4 < v) {
-                random::rand(&v, 1);
-                ww_[w] = (v - .5) ;
-            }
-        }
-    }
 
 
     // the size of x is sizes_[0]
     void forward(const T* x) {
         int layers_num = sizes_.size();
 
-        const T* activation = x;
+        const T* S = x;
 
         int aa_idx = 0;
         int bb_idx = 0;
         int ww_idx = 0;
 
         for (int l = 1; l < layers_num; ++l) {
-            // matrix, vector, result-vector, rows, columns
-            linalg::dot_m2v<T>(&ww_[ww_idx], activation, &aa_[aa_idx], sizes_[l], sizes_[l - 1]);
+            linalg::dot_m2v<T>(&ww_[ww_idx], S, &aa_[aa_idx], sizes_[l], sizes_[l - 1]);
             linalg::sum_v2v<T>(&aa_[aa_idx], &bb_[bb_idx], sizes_[l]);
-            sigmoid(&aa_[aa_idx], sizes_[l]);
-            activation = &aa_[aa_idx];
+
+            if (l == (layers_num - 1)) {
+                softmax(&aa_[aa_idx], sizes_[l]);
+            }
+            else {
+                sigmoid(&aa_[aa_idx], sizes_[l]);
+            }
+
+            S = &aa_[aa_idx];
 
             aa_idx += sizes_[l];
             bb_idx += sizes_[l];
             ww_idx += (sizes_[l] * sizes_[l - 1]);
-        }
-
-        if (verbose_) {
-            cout << "# forward result: {";
-            aa_idx -= sizes_[layers_num - 1];
-            for (int i = 0; i < sizes_[layers_num - 1]; ++i) {
-                cout << aa_[aa_idx + i] << ",";
-            }
-            cout << "}" << endl;
         }
     }
 
@@ -237,62 +228,68 @@ public:
 
             // define shifts in the buffers
             aa_idx -= sizes_[l_idx];
-            ww_idx -= (sizes_[l_idx] * sizes_[l_idx - 1]);
 
             if (1 == l) {
                 // last layer
 
                 // calculate derivatives
-                for (int a = 0; a < sizes_[l_idx]; ++a) { // rows
-                    //cost += (aa_[aa_idx + a] - y[a]) * (aa_[aa_idx + a] - y[a]);
+                for (int a = 0; a < sizes_[l_idx]; ++a) {
+                    cost += (aa_[aa_idx + a] - y[a]) * (aa_[aa_idx + a] - y[a]);
+                    //cost += logloss(aa_[aa_idx + a], y[a]);
 
-                    cost +=  -1. * (y[a] * ::log(aa_[aa_idx + a]) + (1. - y[a]) * ::log(1. - aa_[aa_idx + a])) ;
 
-
-                    //T sig_deriv = aa_[aa_idx + a] - aa_[aa_idx + a] * aa_[aa_idx + a];
-
-                    T delta = (aa_[aa_idx + a] - y[a]); // * sig_deriv;
-
+                    T delta = (aa_[aa_idx + a] - y[a]) ;
                     deltas_[aa_idx + a] = delta;
                     bb_deriv_[aa_idx + a] += delta;
-
-                    int aa_idx_prev = aa_idx - sizes_[l_idx - 1];
-//                    for (int a_prev = 0; a_prev < sizes_[l_idx - 1]; ++a_prev) { // columns
-//                        ww_deriv_[ww_idx + a * sizes_[l_idx - 1] + a_prev] += aa_[aa_idx_prev + a_prev] * delta;
-//                    }
-                    linalg::mul_add_v2s(&aa_[aa_idx_prev], delta, &ww_deriv_[ww_idx + a * sizes_[l_idx - 1]], sizes_[l_idx - 1]);
                 }
 
+                cost /= sizes_[l_idx];
             }
             else {
                 // hidden layers
 
-                int aa_idx_prev = aa_idx - sizes_[l_idx - 1];
+                ww_idx -= (sizes_[l_idx + 1] * sizes_[l_idx]);
                 int aa_idx_next = aa_idx + sizes_[l_idx];
-                int ww_idx_next = ww_idx + (sizes_[l_idx] * sizes_[l_idx - 1]);
 
                 // calculate derivatives
                 for (int a = 0; a < sizes_[l_idx]; ++a) {
-                    T sig_deriv = aa_[aa_idx + a] - aa_[aa_idx + a] * aa_[aa_idx + a];
+
                     T delta = 0;
                     for (int a_next = 0; a_next < sizes_[l_idx + 1]; ++a_next) {
-                        delta += ww_[ww_idx_next + a_next * sizes_[l_idx] + a] * deltas_[aa_idx_next + a_next];
+                        delta += deltas_[aa_idx_next + a_next] * ww_[ww_idx + a_next * sizes_[l_idx] + a];
                     }
+
+                    T sig_deriv = aa_[aa_idx + a] * (1. - aa_[aa_idx + a]);
                     delta *= sig_deriv;
+
                     deltas_[aa_idx + a] = delta;
                     bb_deriv_[aa_idx + a] += delta;
-
-                    const T* activation = aa_idx_prev >= 0 ? &aa_[aa_idx_prev] : x;
-
-//                    for (int a_prev = 0; a_prev < sizes_[l_idx - 1]; ++a_prev) {
-//                        ww_deriv_[ww_idx + a * sizes_[l_idx - 1] + a_prev] += activation[a_prev] * delta;
-//                    }
-                    linalg::mul_add_v2s(activation, delta, &ww_deriv_[ww_idx + a * sizes_[l_idx - 1]], sizes_[l_idx - 1]);
                 }
             }
         }
 
-        return cost; // / 2.;
+        // grad
+        int aa_idx_next = 0;
+        ww_idx = 0;
+
+        const T* Z = x;
+
+        for (int l = 0; l < layers_num-1; ++l) {
+
+            for (int a = 0; a < sizes_[l]; ++a) {
+                for (int a_next = 0; a_next < sizes_[l+1]; ++a_next) {
+                    ww_deriv_[ww_idx + a_next * sizes_[l] + a] += deltas_[aa_idx_next + a_next] * Z[a];
+                }
+            }
+
+            // next
+            Z = &aa_[aa_idx_next];
+
+            aa_idx_next += sizes_[l+1];
+            ww_idx += sizes_[l] * sizes_[l+1];
+        }
+
+        return cost;
     }
 
     void average_deriv(T sample_size) {
@@ -319,6 +316,7 @@ public:
         average_deriv((T)rows);
 
         T reg = 0.;
+
         for (int w = 0; w < total_ww_size_; ++w) {
             reg += ww_[w] * ww_[w];
             ww_deriv_[w] += lambda * ww_[w] / rows;
@@ -327,19 +325,26 @@ public:
 
         // update biases and weights
 
-        T v;
+        for (int b = 0; b < total_bb_size_; ++b) {
+            bb_[b] -= alpha * bb_deriv_[b];
+        }
 
-//        for (int b = 0; b < total_bb_size_; ++b) {
-//            bb_[b] -= alpha * bb_deriv_[b];
-//        }
-        linalg::mul_sub_v2s_use_deltas(bb_deriv_.get(), alpha, bb_.get(), bb_deriv_old_.get(), total_bb_size_);
-
-//        for (int w = 0; w < total_ww_size_; ++w) {
-//            ww_[w] -= alpha * ww_deriv_[w];
-//        }
-        linalg::mul_sub_v2s_use_deltas(ww_deriv_.get(), alpha, ww_.get(), ww_deriv_old_.get(), total_ww_size_);
+        for (int w = 0; w < total_ww_size_; ++w) {
+            ww_[w] -= alpha * ww_deriv_[w];
+        }
 
         return cost / rows + reg;
+    }
+
+
+    void predict(const T* X, T* predictions, int rows) {
+        int x_columns_num = sizes_[0];
+        int y_columns_num = sizes_[ sizes_.size() - 1 ];
+
+        for (int r = 0; r < rows; ++r) {
+            forward(&X[r * x_columns_num]);
+            get_output(&predictions[r * y_columns_num]);
+        }
     }
 
 
